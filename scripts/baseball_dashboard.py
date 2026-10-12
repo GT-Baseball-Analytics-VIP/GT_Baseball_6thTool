@@ -11,6 +11,7 @@ from baseball_analyzer import GTBaseballAnalyzer
 from report_generator import ReportGenerator
 from db_integration import render_database_tab, auto_save_to_db, render_duplicate_warning
 from sixthtool_scraper import scrape_all_matches_to_db
+from aws_data_source import list_games as list_aws_games, load_pitch_data as load_aws_pitch_data
 
 # ---------------------------------------------------------------------------
 # Session persistence — HMAC-signed URL token (deployment-safe, no files)
@@ -63,23 +64,31 @@ def _load_gt_roster_names() -> set:
                 break
         if col is None:
             col = df.columns[0]
-        gt_names = set(df[col].dropna().astype(str).str.strip().str.lower())
-        # Add reversed-token variants so "Last First" CSV names match "First Last" roster
-        variants = set()
-        for name in gt_names:
-            tokens = name.split()
-            if len(tokens) == 2:
-                variants.add(f"{tokens[1]} {tokens[0]}")
-        return gt_names | variants
+        return {
+            _canonical_person_name(name)
+            for name in df[col].dropna().astype(str)
+            if _canonical_person_name(name)
+        }
     except Exception:
         return set()
+
+
+def _canonical_person_name(name) -> str:
+    """Normalize roster and database names for reliable comparisons."""
+    if pd.isna(name):
+        return ""
+    value = " ".join(str(name).replace(",", " ").split()).strip().lower()
+    tokens = value.split()
+    if len(tokens) == 2 and "," in str(name):
+        tokens.reverse()
+    return " ".join(tokens)
 
 
 def _filter_to_gt(names: list, gt_names: set) -> list:
     """Return only names that appear in the GT roster (case-insensitive)."""
     if not gt_names:
         return names  # no roster loaded → show everyone (safe degradation)
-    return [n for n in names if str(n).strip().lower() in gt_names]
+    return [n for n in names if _canonical_person_name(n) in gt_names]
 
 
 def _filter_df_to_gt_fielders(data: pd.DataFrame, gt_names: set) -> pd.DataFrame:
@@ -90,7 +99,7 @@ def _filter_df_to_gt_fielders(data: pd.DataFrame, gt_names: set) -> pd.DataFrame
     if not gt_names or "EventPlayerName" not in data.columns:
         return data
     mask = data["EventPlayerName"].apply(
-        lambda n: str(n).strip().lower() in gt_names if pd.notna(n) else False
+        lambda n: _canonical_person_name(n) in gt_names if pd.notna(n) else False
     )
     return data[mask]
 
@@ -181,96 +190,48 @@ class GTBaseballDashboard:
     def load_data(self):
         """Load and cache data."""
         if "game_data" not in st.session_state:
+            loader = GTBaseballDataLoader()
+            st.subheader("AWS TrackMan Database")
+            st.caption("Showing Georgia Tech games from the shared database.")
+
             try:
-                from db_integration import _get_db
-                db = _get_db()
-                summary = db.db_summary()
-                last_scrape_at = summary.get("last_scrape_run_at")
-                last_scrape_summary = summary.get("last_scrape_summary")
-
-                st.subheader("6th Tool Sync")
-                if last_scrape_at:
-                    try:
-                        last_dt = pd.to_datetime(last_scrape_at, utc=True)
-                        last_est = last_dt.tz_convert("America/New_York")
-                        last_fmt = last_est.strftime("%b %d, %Y %I:%M %p ET")
-                    except Exception:
-                        last_fmt = last_scrape_at
-                    st.caption(f"Last scrape run: {last_fmt}")
+                games_df = list_aws_games(team_code="GIT_YEL")
+                if games_df.empty:
+                    st.warning("No Georgia Tech games were found in the AWS database.")
                 else:
-                    st.caption("Last scrape run: never")
-                if isinstance(last_scrape_summary, dict):
-                    st.caption(
-                        "Last run summary — "
-                        f"inserted: {last_scrape_summary.get('inserted', 0)}, "
-                        f"skipped: {last_scrape_summary.get('skipped', 0)}, "
-                        f"duplicates: {last_scrape_summary.get('duplicate', 0)}, "
-                        f"errors: {last_scrape_summary.get('errors', 0)}"
-                    )
-
-                sc1, sc2, sc3 = st.columns([2, 2, 1.2])
-                with sc1:
-                    scrape_username = st.text_input(
-                        "6th Tool Username",
-                        key="scrape_username",
-                    )
-                with sc2:
-                    scrape_password = st.text_input(
-                        "6th Tool Password",
-                        type="password",
-                        key="scrape_password",
-                    )
-                with sc3:
-                    scrape_clicked = st.button("Fetch All Matches to DB", type="primary")
-
-                if scrape_clicked:
-                    if not scrape_username or not scrape_password:
-                        st.error("Please enter 6th Tool username and password.")
-                    else:
-                        with st.spinner("Scraping all match CSVs and syncing to database..."):
-                            try:
-                                run_summary = scrape_all_matches_to_db(
-                                    scrape_username,
-                                    scrape_password,
-                                    base_url="https://6thtool.smt.com",
-                                )
-                                st.success(
-                                    "Sync complete. "
-                                    f"Inserted: {run_summary['inserted']}, "
-                                    f"Skipped: {run_summary['skipped']}, "
-                                    f"Duplicates: {run_summary['duplicate']}, "
-                                    f"Errors: {run_summary['errors']}"
-                                )
-                                st.caption("Saved to local database: `data/gt_baseball.db`")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"6th Tool sync failed: {e}")
-
-                st.divider()
-                if summary["games"] > 0:
                     st.info(
-                        f"📦 Database has {summary['games']} games "
-                        f"and {summary['pitches']} pitches stored."
+                        f"📦 AWS database has {len(games_df):,} Georgia Tech games "
+                        f"and {int(games_df['PitchCount'].sum()):,} pitches."
                     )
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("Load All Games from Database"):
-                            st.session_state.game_data = db.query_all_games()
+                        if st.button("Load All GT Games from AWS", type="primary"):
+                            with st.spinner("Loading TrackMan data from AWS..."):
+                                aws_data = load_aws_pitch_data(
+                                    game_ids=games_df["GameID"].dropna().astype(str).tolist()
+                                )
+                                aws_data = loader._clean_data(aws_data)
+                                aws_data = loader._add_derived_columns(aws_data)
+                                aws_data = loader._infer_bip_and_fielding(aws_data)
+                                st.session_state.game_data = aws_data
                             st.rerun()
                     with col2:
-                        games_df = db.list_games()
                         chosen = st.selectbox(
-                            "Or load one game:",
-                            ["— pick one —"] + games_df["game_label"].tolist(),
+                            "Or load one GT game:",
+                            ["— pick one —"] + games_df["GameID"].astype(str).tolist(),
                         )
                         if chosen != "— pick one —":
-                            st.session_state.game_data = db.query_game(chosen)
+                            with st.spinner("Loading TrackMan data from AWS..."):
+                                aws_data = load_aws_pitch_data(game_ids=[chosen])
+                                aws_data = loader._clean_data(aws_data)
+                                aws_data = loader._add_derived_columns(aws_data)
+                                aws_data = loader._infer_bip_and_fielding(aws_data)
+                                st.session_state.game_data = aws_data
                             st.rerun()
                     st.divider()
-            except Exception as _db_err:
-                st.warning(f"⚠️ Database not available or inaccessible: {_db_err}")
-
-            loader = GTBaseballDataLoader()
+            except Exception as aws_error:
+                st.error(f"AWS TrackMan database unavailable: {aws_error}")
+                st.info("You can still upload a CSV or Parquet file below as a temporary fallback.")
 
             uploaded_files = st.file_uploader(
                 "Upload GT Baseball CSV/Parquet files",
@@ -297,7 +258,6 @@ class GTBaseballDashboard:
                         df["GameID"] = f"Game_{i+1}"
                         df["FileName"] = file.name
                         all_data.append(df)
-                        auto_save_to_db(df, game_label=file.name, file_name=file.name)
                     except Exception as e:
                         st.error(f"Error loading {file.name}: {e}")
 
@@ -324,12 +284,17 @@ class GTBaseballDashboard:
                         pass
                     fielding_rows = 0
                     try:
-                        fielding_rows = int(len(
-                            st.session_state.game_data[
-                                (st.session_state.game_data.get("IsEventPlayer") == True)
-                                & (st.session_state.game_data.get("EventPlayerName").notna())
-                            ]
-                        ))
+                        event_player = st.session_state.game_data.get(
+                            "EventPlayerName",
+                            pd.Series(pd.NA, index=st.session_state.game_data.index),
+                        )
+                        is_event_player = st.session_state.game_data.get(
+                            "IsEventPlayer",
+                            pd.Series(False, index=st.session_state.game_data.index),
+                        )
+                        fielding_rows = int(
+                            (is_event_player.eq(True) & event_player.notna()).sum()
+                        )
                     except Exception:
                         pass
 
@@ -505,7 +470,7 @@ class GTBaseballDashboard:
             bser = self._name_series(data, ["BatterName", "batter", "batter_name"])
             all_names = set(pser.dropna().unique()) | set(bser.dropna().unique())
             if gt_names:
-                gt_count = sum(1 for n in all_names if str(n).lower() in gt_names)
+                gt_count = sum(1 for n in all_names if _canonical_person_name(n) in gt_names)
                 st.metric("GT Players Active", gt_count)
             else:
                 st.metric("Total Players", len(all_names))
@@ -523,7 +488,7 @@ class GTBaseballDashboard:
         gt_names = _load_gt_roster_names()
         if gt_names and "PitcherName" in data.columns:
             gt_pitcher_mask = data["PitcherName"].apply(
-                lambda n: pd.notna(n) and str(n).strip().lower() in gt_names
+                lambda n: pd.notna(n) and _canonical_person_name(n) in gt_names
             )
             data = data[gt_pitcher_mask]
 
@@ -625,7 +590,7 @@ class GTBaseballDashboard:
         gt_names = _load_gt_roster_names()
         if gt_names and "BatterName" in data.columns:
             gt_batter_mask = data["BatterName"].apply(
-                lambda n: pd.notna(n) and str(n).strip().lower() in gt_names
+                lambda n: pd.notna(n) and _canonical_person_name(n) in gt_names
             )
             data = data[gt_batter_mask]
 
@@ -853,8 +818,9 @@ class GTBaseballDashboard:
         )
         if not has_fielding:
             st.warning(
-                "No GT fielding rows found. Make sure `scripts/gt_roster.csv` is present "
-                "and that EventPlayerName values match roster names exactly."
+                "The AWS database currently has defensive positioning at pitch release, "
+                "but no fielder-event rows or catch-probability metrics. "
+                "Player-level fielding analytics require an additional event-tracking source."
             )
             with st.expander("Debug: EventPlayerName values in data"):
                 if "EventPlayerName" in data.columns:
@@ -1242,6 +1208,10 @@ class GTBaseballDashboard:
         gt_data = data.copy()
         if gt_names:
             if "EventPlayerName" in gt_data.columns:
+                if "IsEventPlayer" in gt_data.columns:
+                    gt_data["IsEventPlayer"] = gt_data["IsEventPlayer"].astype("boolean")
+                else:
+                    gt_data["IsEventPlayer"] = False
                 non_gt_mask = gt_data["EventPlayerName"].apply(
                     lambda n: pd.notna(n) and str(n).strip().lower() not in gt_names
                 )
@@ -1358,7 +1328,12 @@ class GTBaseballDashboard:
                                 f"{player_data['max_speed'].get('max_achieved', 0):.1f} mph"
                             )
             else:
-                st.info(baserunning_analysis.get("error", "No baserunning data available."))
+                st.info(
+                    "The current AWS analytics schema does not expose runner-tracking "
+                    "fields (`BaserunnerInitial`, `BaserunnerSecondary`, or "
+                    "`BaserunnerFinal`), so baserunning accountability cannot be "
+                    "calculated yet."
+                )
 
         with tab2:
             st.subheader("⚠️ Violations Report")

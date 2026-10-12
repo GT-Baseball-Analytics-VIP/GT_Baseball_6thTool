@@ -114,13 +114,38 @@ class GTBaseballDataLoader:
             df_inf["EventPlayerName"] = pd.NA
         if "IsEventPlayer" not in df_inf.columns:
             df_inf["IsEventPlayer"] = pd.NA
+        for column in [
+            "BaserunnerInitial",
+            "BaserunnerSecondary",
+            "BaserunnerFinal",
+            "BaserunnerMaxSpeed",
+            "BaserunnerName",
+            "FielderProbability",
+            "FielderRouteEfficiency",
+            "FielderReaction",
+            "FielderMove",
+            "FielderReactionAngle",
+            "FielderTransfer",
+            "FielderThrow",
+            "FielderThrowDistance",
+            "FielderMaxSpeed",
+        ]:
+            if column not in df_inf.columns:
+                df_inf[column] = pd.Series(pd.NA, index=df_inf.index, dtype="object")
 
         # Heuristics: if exit velo / launch angle / actual distance exist -> likely ball in play
+        def has_values(column: str) -> pd.Series:
+            values = df_inf.get(
+                column,
+                pd.Series(pd.NA, index=df_inf.index, dtype="object"),
+            )
+            return values.notna().fillna(False)
+
         has_hit_metrics = (
-            df_inf.get("ExitVelo").notna().fillna(False) |
-            df_inf.get("LaunchAng").notna().fillna(False) |
-            df_inf.get("ActualDistance").notna().fillna(False) |
-            df_inf.get("HitVelo", pd.Series([pd.NA]*len(df_inf))).notna().fillna(False)
+            has_values("ExitVelo")
+            | has_values("LaunchAng")
+            | has_values("ActualDistance")
+            | has_values("HitVelo")
         )
         # Also treat explicit text markers in Result
         result_text = df_inf.get("Result")
@@ -178,6 +203,28 @@ class GTBaseballDataLoader:
             "ExitVelo",
             "LaunchAng",
             "ActualDistance",
+            "HitSpinRate",
+            "HitBearing",
+            "HangTime",
+            "MaxHeight",
+            "PositionAt110X",
+            "PositionAt110Y",
+            "PositionAt110Z",
+            "LastTrackedDistance",
+            "EffectiveVelo",
+            "ZoneSpeed",
+            "PitchTilt",
+            "ReleaseHeight",
+            "ReleaseSide",
+            "Extension",
+            "VerticalBreak",
+            "InducedVerticalBreak",
+            "HorizontalBreak",
+            "VerticalApproachAngle",
+            "HorizontalApproachAngle",
+            "ZoneTime",
+            "PFXx",
+            "PFXz",
             "BaserunnerMaxSpeed",
             "BaserunnerInitial",
             "BaserunnerSecondary",
@@ -288,7 +335,11 @@ class GTBaseballDataLoader:
         try:
             bip_mask = pd.to_numeric(df_derived.get("BallInPlay"), errors="coerce").astype('boolean').fillna(False)
         except Exception:
-            bip_mask = df_derived.get("BallInPlay").notna() & (df_derived.get("BallInPlay") != 0)
+            bip_values = df_derived.get(
+                "BallInPlay",
+                pd.Series(False, index=df_derived.index),
+            )
+            bip_mask = bip_values.notna() & (bip_values != 0)
         if "PitchOutcome" in df_derived.columns:
             fallback_mask = bip_mask & df_derived["PitchOutcome"].isin(["Unknown", "Other"])
             if fallback_mask.any():

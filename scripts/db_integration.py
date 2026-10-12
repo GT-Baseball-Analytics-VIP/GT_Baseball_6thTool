@@ -23,6 +23,11 @@ import plotly.express as px  # type: ignore
 from pathlib import Path
 
 try:
+    from aws_data_source import list_games as list_aws_games
+except ImportError:
+    list_aws_games = None
+
+try:
     from db_manager import GTBaseballDB
     DB_AVAILABLE = True
 except ImportError:
@@ -153,7 +158,33 @@ def render_duplicate_warning():
 # ---------------------------------------------------------------------------
 
 def render_database_tab():
-    """Render the full Database management tab inside the dashboard."""
+    """Render a read-only overview of the shared AWS TrackMan database."""
+    st.header("🗄️ AWS TrackMan Database")
+    st.caption(
+        "The dashboard reads TrackMan data from the shared PostgreSQL database. "
+        "Database writes are handled by the upstream ingestion process."
+    )
+
+    if list_aws_games is None:
+        st.error("The AWS data adapter is unavailable.")
+        return
+
+    try:
+        games_df = list_aws_games(team_code="GIT_YEL")
+    except Exception as error:
+        st.error(f"AWS TrackMan database unavailable: {error}")
+        return
+
+    c1, c2 = st.columns(2)
+    c1.metric("GT Games", len(games_df))
+    c2.metric("Pitches", int(games_df["PitchCount"].sum()) if not games_df.empty else 0)
+    if games_df.empty:
+        st.info("No Georgia Tech games were found.")
+    else:
+        st.dataframe(games_df, use_container_width=True)
+    return
+
+    # Legacy local database management UI retained below for reference.
     st.header("🗄️ Database Management")
     if st.button("🔄 Refresh Data", help="Re-fetch all stats from the database"):
         _invalidate_cache()
