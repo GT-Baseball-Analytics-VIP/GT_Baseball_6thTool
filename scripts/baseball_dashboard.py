@@ -585,6 +585,10 @@ class GTBaseballDashboard:
         """Render hitting analysis section."""
         st.header("🏏 Hitting Analysis")
         st.caption("Showing GT batters only.")
+        st.warning(
+            "Sprint Speed Analysis additionally requires "
+            "`BatterTimeToFirst`, which is not currently available in AWS."
+        )
 
         # Filter to GT batters only
         gt_names = _load_gt_roster_names()
@@ -686,6 +690,12 @@ class GTBaseballDashboard:
         """Render baserunning analysis section."""
         st.header("🏃 Baserunning Analysis")
         st.caption("Showing GT baserunners only.")
+        st.warning(
+            "This tab additionally requires the following AWS fields, which are "
+            "not currently available: `BaserunnerName`, `BaserunnerInitial`, "
+            "`BaserunnerSecondary`, `BaserunnerFinal`, and "
+            "`BaserunnerMaxSpeed`."
+        )
 
         # Filter to GT baserunners only
         gt_names = _load_gt_roster_names()
@@ -708,7 +718,6 @@ class GTBaseballDashboard:
         base_data = data[data[speed_col].notna()]
 
         if len(base_data) == 0:
-            st.warning("No baserunning data available for analysis.")
             return
 
         col1, col2 = st.columns(2)
@@ -806,6 +815,13 @@ class GTBaseballDashboard:
         """Render defensive coaching insights — GT players only."""
         st.header("🛡️ Defensive Coaching Analytics")
         st.caption("Showing GT players only — all pitch/ball-in-play data is retained.")
+        st.warning(
+            "This tab additionally requires the following AWS fields, which are "
+            "not currently available: `EventPlayerName`, `IsEventPlayer`, "
+            "`FielderProbability`, `FielderRouteEfficiency`, "
+            "`FielderReaction`, `FielderMaxSpeed`, `FielderThrow`, and "
+            "`FielderThrowDistance`."
+        )
 
         gt_names = _load_gt_roster_names()
 
@@ -817,11 +833,6 @@ class GTBaseballDashboard:
             and gt_fielding_data["IsEventPlayer"].sum() > 0
         )
         if not has_fielding:
-            st.warning(
-                "The AWS database currently has defensive positioning at pitch release, "
-                "but no fielder-event rows or catch-probability metrics. "
-                "Player-level fielding analytics require an additional event-tracking source."
-            )
             with st.expander("Debug: EventPlayerName values in data"):
                 if "EventPlayerName" in data.columns:
                     st.write(data["EventPlayerName"].dropna().unique().tolist())
@@ -1155,6 +1166,12 @@ class GTBaseballDashboard:
         """Prepare data for video analysis overlay."""
         st.header("🎥 Video Analysis Preparation")
         st.info("This section prepares highlight data for video overlay integration")
+        st.warning(
+            "Exceptional-fielding highlights additionally require the following "
+            "AWS fields, which are not currently available: "
+            "`EventPlayerName`, `FielderProbability`, and "
+            "`FielderRouteEfficiency`."
+        )
         st.subheader("Plays Worth Video Review")
 
         hard_hits = data[
@@ -1200,6 +1217,13 @@ class GTBaseballDashboard:
         """Render accountability metrics dashboard — GT players only."""
         st.header("📊 Accountability Metrics")
         st.caption("Defensive accountability is scoped to GT players only.")
+        st.warning(
+            "This tab additionally requires AWS fields that are not currently "
+            "available: `BaserunnerInitial`, `BaserunnerSecondary`, "
+            "`BaserunnerFinal`, `BaserunnerMaxSpeed`, `EventPlayerName`, "
+            "`FielderProbability`, `FielderRouteEfficiency`, and "
+            "`FielderReaction`."
+        )
 
         gt_names = _load_gt_roster_names()
 
@@ -1328,7 +1352,7 @@ class GTBaseballDashboard:
                                 f"{player_data['max_speed'].get('max_achieved', 0):.1f} mph"
                             )
             else:
-                st.info(
+                st.warning(
                     "The current AWS analytics schema does not expose runner-tracking "
                     "fields (`BaserunnerInitial`, `BaserunnerSecondary`, or "
                     "`BaserunnerFinal`), so baserunning accountability cannot be "

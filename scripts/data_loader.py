@@ -330,6 +330,9 @@ class GTBaseballDataLoader:
         # normalize to string safely for matching
         result_norm = result_series.astype(object).fillna("").astype(str).str.strip()
         df_derived["PitchOutcome"] = result_norm.apply(lambda r: self._categorize_pitch_outcome(r if r != "" else None))
+        df_derived["PitchOutcome"] = self._apply_trackman_outcome_mapping(
+            df_derived, df_derived["PitchOutcome"]
+        )
 
         # Fallback: if BallInPlay True but outcome is Unknown/Other, mark as 'In Play'
         try:
@@ -387,6 +390,86 @@ class GTBaseballDataLoader:
                 df_derived["FieldingEfficiency"] = pd.NA
 
         return df_derived
+
+    def _apply_trackman_outcome_mapping(
+        self, df: pd.DataFrame, outcomes: pd.Series
+    ) -> pd.Series:
+        """Use TrackMan fields to restore detailed outcome labels.
+
+        Legacy exports sometimes provide a fully formatted Result value. For
+        TrackMan rows whose result is ``Undefined``, PitchCall, PlayResult, and
+        TaggedHitType provide enough information to recreate the dashboard's
+        detailed pitch-outcome categories.
+        """
+        required = {"PitchCall", "PlayResult"}
+        if not required.issubset(df.columns):
+            return outcomes
+
+        def text(row: pd.Series, column: str) -> str:
+            value = row.get(column)
+            return "" if pd.isna(value) else str(value).strip()
+
+        def map_row(row: pd.Series) -> str:
+            pitch_call = text(row, "PitchCall").lower()
+            play_result = text(row, "PlayResult").lower()
+            hit_type = text(row, "TaggedHitType").lower()
+            current = str(outcomes.loc[row.name])
+
+            if pitch_call in {"ballcalled", "ballindirt", "ballintentional"}:
+                return "Ball"
+            if pitch_call in {
+                "strikecalled",
+                "strikeswinging",
+                "automaticstrike",
+                "automaticball",
+            }:
+                return "Strike"
+            if "hitby" in pitch_call:
+                return "HBP"
+            if "foul" in pitch_call:
+                return "Foul"
+
+            result_labels = {
+                "single": "In Play Single",
+                "double": "In Play Double",
+                "triple": "In Play Triple",
+                "homerun": "In Play Home Run",
+                "home run": "In Play Home Run",
+                "fielderschoice": "In Play Fielder's Choice",
+                "fielder's choice": "In Play Fielder's Choice",
+                "error": "In Play Error",
+                "sacrifice": "In Play Sacrifice",
+                "stolenbase": "Stolen Base",
+                "stolen base": "Stolen Base",
+                "caughtstealing": "Caught Stealing",
+                "caught stealing": "Caught Stealing",
+            }
+            if play_result == "sacrifice" and hit_type in {"flyball", "fly ball"}:
+                return "In Play Sacrifice Fly"
+            if play_result == "sacrifice" and hit_type == "bunt":
+                return "In Play Sacrifice Bunt"
+            if play_result in result_labels:
+                return result_labels[play_result]
+
+            # Do not replace a richly classified legacy result when TrackMan
+            # does not provide a more specific classification.
+            if current not in {"Unknown", "Other", "In Play"}:
+                return current
+
+            if play_result == "out" or pitch_call == "inplay":
+                if hit_type in {"groundball", "ground ball"}:
+                    return "In Play Ground Out" if play_result == "out" else "In Play Ground Ball"
+                if hit_type in {"flyball", "fly ball", "popup", "pop up"}:
+                    return "In Play Fly Out" if play_result == "out" else "In Play Fly Ball"
+                if hit_type in {"linedrive", "line drive"}:
+                    return "In Play Line Drive"
+                if hit_type == "bunt":
+                    return "In Play Sacrifice Bunt" if play_result == "sacrifice" else "In Play Bunt"
+                return "In Play Out" if play_result == "out" else "In Play"
+
+            return current
+
+        return df.apply(map_row, axis=1).astype("object")
 
     def _categorize_pitch_outcome(self, result: Optional[str]) -> str:
         """Categorize pitch outcomes into main types."""
